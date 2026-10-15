@@ -1,0 +1,119 @@
+rules_version = '2';
+
+// LabMark security rules.
+// The server re-checks what matters: who you are, that the time is the server's own clock,
+// and that the reported GPS point lies inside the lab's radius.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function myEmail() { return request.auth.token.email; }
+    function isAdmin() {
+      return signedIn() && request.auth.token.email_verified == true
+        && exists(/databases/$(database)/documents/admins/$(myEmail()));
+    }
+    function settingsPath() { return /databases/$(database)/documents/config/settings; }
+    function domainOk() {
+      return !exists(settingsPath())
+        || get(settingsPath()).data.get('allowedDomain', '') == ''
+        || myEmail().split('@')[1] == get(settingsPath()).data.allowedDomain;
+    }
+    function pad(n) { return n < 10 ? '0' + string(n) : string(n); }
+    // Calendar date in India (UTC+05:30) from the server clock, as YYYY-MM-DD.
+    function istDate(t) {
+      let s = t + duration.value(330, 'm');
+      return string(s.year()) + '-' + pad(s.month()) + '-' + pad(s.day());
+    }
+    // Same flat-earth distance the app uses; accurate to well under a metre at lab scale.
+    function inside(l, lat, lng) {
+      let dy = (lat - l.lat) * 110574.0;
+      let dx = (lng - l.lng) * 111320.0 * l.cosLat;
+      return dx * dx + dy * dy <= l.radius * l.radius;
+    }
+    function lab(id) { return get(/databases/$(database)/documents/labs/$(id)).data; }
+    function profile() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
+
+    // ---------- People ----------
+    match /admins/{email} {
+      allow get: if signedIn() && (email == myEmail() || isAdmin());
+      allow list, write: if isAdmin();
+    }
+
+    match /users/{uid} {
+      allow read: if isAdmin() || (signedIn() && request.auth.uid == uid);
+      allow create: if signedIn() && request.auth.uid == uid && domainOk()
+        && request.resource.data.keys().hasOnly(['uid', 'email', 'name', 'rollNo', 'createdAt'])
+        && request.resource.data.uid == uid
+        && request.resource.data.email == myEmail()
+        && request.resource.data.name is string && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 80
+        && request.resource.data.rollNo is string && request.resource.data.rollNo.matches('^[A-Z0-9]{4,20}$');
+      // Students cannot change their own roll number; managers can fix any profile.
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ---------- Lab setup ----------
+    match /labs/{labId} {
+      allow read: if signedIn();
+      allow delete: if isAdmin();
+      allow create, update: if isAdmin()
+        && request.resource.data.lat is number && request.resource.data.lng is number
+        && request.resource.data.cosLat is number && request.resource.data.radius is number
+        && request.resource.data.radius >= 10;
+    }
+    match /config/{docId} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    // ---------- Attendance ----------
+    match /sessions/{sid} {
+      allow read: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
+
+      // Check in
+      allow create: if signedIn() && domainOk()
+        && request.resource.data.keys().hasOnly(['uid', 'email', 'name', 'rollNo', 'labId', 'labName', 'date',
+             'inAt', 'inLat', 'inLng', 'inAcc', 'inDist', 'status', 'ua'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.email == myEmail()
+        && request.resource.data.rollNo == profile().rollNo
+        && request.resource.data.name == profile().name
+        && request.resource.data.status == 'open'
+        && request.resource.data.inAt == request.time
+        && request.resource.data.date == istDate(request.time)
+        && request.resource.data.inLat is number && request.resource.data.inLng is number
+        && lab(request.resource.data.labId).active == true
+        && request.resource.data.labName == lab(request.resource.data.labId).name
+        && inside(lab(request.resource.data.labId), request.resource.data.inLat, request.resource.data.inLng);
+
+      // Check out: same day, same lab, only the check-out fields change
+      allow update: if isAdmin() || (signedIn()
+        && resource.data.uid == request.auth.uid
+        && resource.data.status == 'open'
+        && resource.data.date == istDate(request.time)
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['status', 'outAt', 'outLat', 'outLng', 'outAcc', 'outDist'])
+        && request.resource.data.status == 'closed'
+        && request.resource.data.outAt == request.time
+        && request.resource.data.outLat is number && request.resource.data.outLng is number
+        && inside(lab(resource.data.labId), request.resource.data.outLat, request.resource.data.outLng));
+
+      allow delete: if isAdmin();
+    }
+
+    match /photos/{pid} {
+      allow read: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['uid', 'sessionId', 'kind', 'img', 'at'])
+        && request.resource.data.uid == request.auth.uid
+        && pid == request.resource.data.sessionId + '_' + request.resource.data.kind
+        && request.resource.data.kind in ['in', 'out']
+        && request.resource.data.at == request.time
+        && request.resource.data.img is string
+        && request.resource.data.img.matches('^data:image/jpeg;base64,.*')
+        && request.resource.data.img.size() < 300000
+        && getAfter(/databases/$(database)/documents/sessions/$(request.resource.data.sessionId)).data.uid == request.auth.uid;
+      allow delete: if isAdmin();
+    }
+  }
+}

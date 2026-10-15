@@ -1,0 +1,9 @@
+{
+  "firestore": { "rules": "firestore.rules", "indexes": "firestore.indexes.json" },
+  "hosting": {
+    "public": "public",
+    "ignore": ["firebase.json", "**/.*"],
+    "headers": [{ "source": "**", "headers": [{ "key": "Permissions-Policy", "value": "camera=(self), geolocation=(self)" }] }]
+  },
+  "emulators": { "firestore": { "port": 8080 }, "ui": { "enabled": false } }
+}
