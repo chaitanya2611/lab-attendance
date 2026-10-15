@@ -1,0 +1,9 @@
+{
+  "name": "LabMark — Lab Attendance",
+  "short_name": "LabMark",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f4f7f6",
+  "theme_color": "#0d5c4f",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}
