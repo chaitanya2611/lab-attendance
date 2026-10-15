@@ -26,6 +26,8 @@ let pass = 0, fail = 0;
 async function t(name, p) { try { await p; console.log("ok  ", name); pass++; } catch (e) { console.log("FAIL", name, e.message.split("\n")[0]); fail++; } }
 
 await t("wrong domain cannot create profile", assertFails(setDoc(doc(other, "users/u2"), { uid: "u2", email: "x@gmail.com", name: "X", rollNo: "24M0001", createdAt: serverTimestamp() })));
+const unverified = env.authenticatedContext("u7", { email: "new@iitb.ac.in", email_verified: false }).firestore();
+await t("unverified email cannot create profile", assertFails(setDoc(doc(unverified, "users/u7"), { uid: "u7", email: "new@iitb.ac.in", name: "N", rollNo: "24M0007", createdAt: serverTimestamp() })));
 await t("student creates profile", assertSucceeds(setDoc(doc(stu, "users/u1"), { uid: "u1", email: "stu@iitb.ac.in", name: "Stu Dent", rollNo: "24M1234", createdAt: serverTimestamp() })));
 await t("student cannot change roll no", assertFails(updateDoc(doc(stu, "users/u1"), { rollNo: "24M9999" })));
 await t("student reads own admin doc (absent)", assertSucceeds(getDoc(doc(stu, "admins/stu@iitb.ac.in"))));

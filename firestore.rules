@@ -13,10 +13,12 @@ service cloud.firestore {
         && exists(/databases/$(database)/documents/admins/$(myEmail()));
     }
     function settingsPath() { return /databases/$(database)/documents/config/settings; }
+    // Email/password accounts must have clicked the verification link; Google accounts always are.
+    function verified() { return request.auth.token.email_verified == true; }
     function domainOk() {
-      return !exists(settingsPath())
+      return verified() && (!exists(settingsPath())
         || get(settingsPath()).data.get('allowedDomain', '') == ''
-        || myEmail().split('@')[1] == get(settingsPath()).data.allowedDomain;
+        || myEmail().split('@')[1] == get(settingsPath()).data.allowedDomain);
     }
     function pad(n) { return n < 10 ? '0' + string(n) : string(n); }
     // Calendar date in India (UTC+05:30) from the server clock, as YYYY-MM-DD.

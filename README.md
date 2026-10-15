@@ -5,8 +5,8 @@
 To update the live site after changing files in `public/`: `git subtree push --prefix public origin gh-pages`.
 To update security rules: `firebase deploy --only firestore:rules` (or paste `firestore.rules` into Firestore → Rules → Publish).
 
-A SAFE-style attendance web app for labs. Students open a link on their phone, sign in with Google,
-and tap **Check in** when they arrive and **Check out** when they leave. Each tap needs:
+A SAFE-style attendance web app for labs. Students open a link on their phone, create an account with their **institute email**
+(`@iitb.ac.in`, confirmed by a verification link sent to that inbox) or sign in with Google, and tap **Check in** when they arrive and **Check out** when they leave. Each tap needs:
 
 1. **GPS inside the lab's geofence** (default 50 m), checked on the phone *and* again by the server rules.
 2. **A live selfie** from the front camera (no gallery uploads), stamped with date, time and lab name.
@@ -95,7 +95,7 @@ Needs Java 11+.
 ```bash
 cd tests && npm install && npm test
 ```
-It runs 27 checks against the local Firestore emulator: far-away check-ins, backdated times, someone
+It runs 28 checks against the local Firestore emulator: far-away check-ins, backdated times, someone
 else's roll number, reading other students' photos, self-promotion to manager, and so on.
 
 ## Files
