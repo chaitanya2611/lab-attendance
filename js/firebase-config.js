@@ -12,3 +12,7 @@ export const firebaseConfig = {
 // Shown in the header and on the sign-in screen.
 export const APP_NAME = "LabMark";
 export const ORG_NAME = "BSBE Labs · IIT Bombay";
+
+// Students must sign up with an email at this domain (verified by a link sent to that inbox).
+// Lab managers listed in Firestore "admins" can use any account. Set to "" to allow any email.
+export const INSTITUTE_DOMAIN = "iitb.ac.in";

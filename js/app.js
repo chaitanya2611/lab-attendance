@@ -1,13 +1,14 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
   getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect,
-  onAuthStateChanged, signOut,
+  onAuthStateChanged, signOut, createUserWithEmailAndPassword, signInWithEmailAndPassword,
+  sendEmailVerification, sendPasswordResetEmail, updateProfile, reload,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   getFirestore, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, addDoc,
   collection, query, where, writeBatch, serverTimestamp, onSnapshot,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { firebaseConfig, APP_NAME, ORG_NAME } from "./firebase-config.js";
+import { firebaseConfig, APP_NAME, ORG_NAME, INSTITUTE_DOMAIN } from "./firebase-config.js";
 
 /* ------------------------------------------------------------------ *
  * Basics
@@ -170,20 +171,88 @@ function renderSetupNeeded() {
   </main>`;
 }
 
-function renderSignIn(msg = "") {
+const instituteOk = (email) => !INSTITUTE_DOMAIN || email.toLowerCase().endsWith("@" + INSTITUTE_DOMAIN);
+
+function authError(e) {
+  const map = {
+    "auth/invalid-credential": "Email or password is wrong. If you are new, choose “Create account”.",
+    "auth/wrong-password": "Email or password is wrong.",
+    "auth/user-not-found": "No account with this email yet. Choose “Create account”.",
+    "auth/email-already-in-use": "An account with this email already exists. Sign in instead, or reset your password.",
+    "auth/weak-password": "Use a password of at least 8 characters.",
+    "auth/invalid-email": "That email address doesn't look right.",
+    "auth/too-many-requests": "Too many attempts. Wait a few minutes and try again.",
+    "auth/network-request-failed": "No internet connection. Check your network and try again.",
+  };
+  return map[e.code] || "Something went wrong (" + (e.code || e.message) + "). Try again.";
+}
+
+function renderSignIn(msg = "", mode = "signin") {
+  const isNew = mode === "signup";
+  const dom = INSTITUTE_DOMAIN ? "@" + INSTITUTE_DOMAIN : "";
   app.innerHTML = `${header()}
   <main class="wrap narrow signin">
     <section class="hero">
       <p class="eyebrow">Lab attendance</p>
       <h1>Check in when you arrive.<br>Check out when you leave.</h1>
       <p class="muted">Your phone's location confirms you are inside the lab, and a quick selfie confirms it is you.</p>
-      <button class="primary lg" id="google">
-        <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>
-        Continue with Google
-      </button>
-      ${msg ? `<p class="error">${esc(msg)}</p>` : ""}
+    </section>
+    <section class="panel auth">
+      <div class="seg" role="tablist">
+        <button role="tab" id="m-in" aria-selected="${!isNew}">Sign in</button>
+        <button role="tab" id="m-up" aria-selected="${isNew}">Create account</button>
+      </div>
+      <form id="ef" class="form" novalidate>
+        <label for="ef-email">Institute email</label>
+        <input id="ef-email" type="email" autocomplete="username" required placeholder="rollno${esc(dom)}" inputmode="email">
+        <label for="ef-pass">Password</label>
+        <input id="ef-pass" type="password" autocomplete="${isNew ? "new-password" : "current-password"}" required minlength="8" placeholder="${isNew ? "At least 8 characters" : ""}">
+        ${isNew ? `<label for="ef-pass2">Confirm password</label>
+        <input id="ef-pass2" type="password" autocomplete="new-password" required minlength="8">
+        <p class="muted small">We'll email a verification link to your ${esc(dom || "institute")} inbox. Your account works after you click it.</p>` : ""}
+        <button class="primary lg" type="submit">${isNew ? "Create account" : "Sign in"}</button>
+        ${isNew ? "" : `<button type="button" class="link" id="forgot">Forgot password?</button>`}
+        <p class="error" id="ef-err" ${msg ? "" : "hidden"}>${esc(msg)}</p>
+        <p class="ok-text" id="ef-ok" hidden></p>
+      </form>
+      <div class="or"><span>or</span></div>
+      <button class="ghost lg" id="google"><svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg> Continue with Google</button>
     </section>
   </main>`;
+  $("#m-in").addEventListener("click", () => renderSignIn("", "signin"));
+  $("#m-up").addEventListener("click", () => renderSignIn("", "signup"));
+  const err = (t) => { const el = $("#ef-err"); el.textContent = t; el.hidden = !t; $("#ef-ok").hidden = true; };
+
+  $("#ef").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const email = $("#ef-email").value.trim().toLowerCase();
+    const pass = $("#ef-pass").value;
+    if (!email || !pass) return err("Enter your email and password.");
+    if (!instituteOk(email)) return err(`Use your ${dom} email address.`);
+    const btn = e.submitter || $("#ef button[type=submit]");
+    btn.disabled = true;
+    try {
+      if (isNew) {
+        if (pass.length < 8) { btn.disabled = false; return err("Use a password of at least 8 characters."); }
+        if (pass !== $("#ef-pass2").value) { btn.disabled = false; return err("The two passwords don't match."); }
+        const cred = await createUserWithEmailAndPassword(auth, email, pass);
+        await sendEmailVerification(cred.user).catch(() => {});
+      } else {
+        await signInWithEmailAndPassword(auth, email, pass);
+      }
+    } catch (ex) { btn.disabled = false; err(authError(ex)); }
+  });
+
+  $("#forgot")?.addEventListener("click", async () => {
+    const email = $("#ef-email").value.trim().toLowerCase();
+    if (!email) return err("Type your email above first, then tap “Forgot password?”.");
+    try {
+      await sendPasswordResetEmail(auth, email);
+      err(""); const ok = $("#ef-ok"); ok.hidden = false;
+      ok.textContent = `If an account exists for ${email}, a reset link is on its way. Check spam too.`;
+    } catch (ex) { err(authError(ex)); }
+  });
+
   $("#google").addEventListener("click", async () => {
     const provider = new GoogleAuthProvider();
     provider.setCustomParameters({ prompt: "select_account" });
@@ -192,9 +261,36 @@ function renderSignIn(msg = "") {
       if (e.code === "auth/popup-blocked" || e.code === "auth/operation-not-supported-in-this-environment") {
         await signInWithRedirect(auth, provider);
       } else if (e.code !== "auth/popup-closed-by-user" && e.code !== "auth/cancelled-popup-request") {
-        renderSignIn("Sign-in failed: " + (e.message || e.code));
+        err("Google sign-in failed: " + (e.message || e.code));
       }
     }
+  });
+}
+
+function renderVerify(note = "") {
+  app.innerHTML = `${header()}
+  <main class="wrap narrow"><section class="panel">
+    <p class="eyebrow">One more step</p>
+    <h1>Verify your email</h1>
+    <p>We sent a link to <strong>${esc(S.user.email)}</strong>. Open it, then come back and tap the button below.</p>
+    <p class="muted small">Not there? Check spam or junk. The mail comes from noreply@${esc(firebaseConfig.authDomain)}.</p>
+    <div class="row">
+      <button class="primary" id="v-done">I've verified</button>
+      <button class="ghost" id="v-resend">Resend link</button>
+    </div>
+    <p class="${note.startsWith("!") ? "error" : "ok-text"}" id="v-note" ${note ? "" : "hidden"}>${esc(note.replace(/^!/, ""))}</p>
+  </section></main>`;
+  bindHeader();
+  $("#v-done").addEventListener("click", async () => {
+    await reload(S.user);
+    if (auth.currentUser.emailVerified) {
+      await auth.currentUser.getIdToken(true); // refresh so the server sees the verified flag
+      boot(auth.currentUser);
+    } else renderVerify("!Not verified yet. Open the link in the email first.");
+  });
+  $("#v-resend").addEventListener("click", async () => {
+    try { await sendEmailVerification(S.user); renderVerify("Sent a new link. Check your inbox and spam."); }
+    catch (e) { renderVerify("!" + authError(e)); }
   });
 }
 
@@ -203,12 +299,12 @@ function renderLoading(text = "Loading…") {
   bindHeader();
 }
 
-function renderWrongDomain() {
+function renderWrongDomain(domain = S.settings.allowedDomain) {
   app.innerHTML = `${header()}
   <main class="wrap narrow"><section class="panel">
     <h1>Use your institute account</h1>
     <p>You signed in as <strong>${esc(S.user.email)}</strong>. This lab only accepts
-    <strong>@${esc(S.settings.allowedDomain)}</strong> accounts. Sign out and choose that account instead.</p>
+    <strong>@${esc(domain)}</strong> accounts. Sign out, then sign in or create an account with your institute email.</p>
   </section></main>`;
   bindHeader();
 }
@@ -227,7 +323,7 @@ function renderOnboarding() {
         <label for="pf-name">Full name</label>
         <input id="pf-name" required maxlength="80" value="${esc(S.user.displayName || "")}" autocomplete="name">
         <label for="pf-roll">Roll number</label>
-        <input id="pf-roll" required maxlength="20" placeholder="e.g. 24M1234" autocapitalize="characters" pattern="[A-Za-z0-9]{4,20}">
+        <input id="pf-roll" required maxlength="20" placeholder="e.g. 24M1234" value="${esc(/^[a-z0-9]{4,20}$/i.test((S.user.email||"").split("@")[0]) ? S.user.email.split("@")[0].toUpperCase() : "")}" autocapitalize="characters" pattern="[A-Za-z0-9]{4,20}">
         <button class="primary lg" type="submit">Save and continue</button>
         <p class="error" id="pf-err" hidden></p>
       </form>
@@ -904,17 +1000,23 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !sheet.h
 if (!configured) {
   renderSetupNeeded();
 } else {
-  onAuthStateChanged(auth, async (user) => {
+  onAuthStateChanged(auth, (user) => boot(user));
+}
+
+async function boot(user) {
     cleanup();
     S.user = user; S.profile = null; S.isAdmin = false;
     if (!user) return renderSignIn();
+    const email = (user.email || "").toLowerCase();
+    const isPassword = user.providerData.some((p) => p.providerId === "password");
+    if (isPassword && !user.emailVerified) return renderVerify();
     renderLoading();
     try {
-      const email = (user.email || "").toLowerCase();
       const [adminSnap] = await Promise.all([getDoc(doc(db, "admins", email)), loadShared()]);
       S.isAdmin = adminSnap.exists();
       if (S.isAdmin) return startAdmin();
-      if (S.settings.allowedDomain && !email.endsWith("@" + S.settings.allowedDomain)) return renderWrongDomain();
+      const domain = S.settings.allowedDomain || INSTITUTE_DOMAIN;
+      if (domain && !email.endsWith("@" + domain)) return renderWrongDomain(domain);
       const prof = await getDoc(doc(db, "users", user.uid));
       if (!prof.exists()) return renderOnboarding();
       S.profile = prof.data();
@@ -925,5 +1027,4 @@ if (!configured) {
         If you just set up Firebase, check that the security rules are deployed.</p></main>`;
       bindHeader();
     }
-  });
 }

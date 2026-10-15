@@ -191,3 +191,13 @@ tbody tr:last-child td { border-bottom: 0; }
 .panel > h2:first-child { margin-top: 0; }
 .form.two input, .form.two select, .form.two button { max-width: 420px; }
 .pair img, .thumb { display: block; }
+/* Sign-in panel */
+.auth { display: grid; gap: 14px; margin-top: 0; }
+.seg { display: grid; grid-template-columns: 1fr 1fr; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 3px; }
+.seg button { background: transparent; color: var(--muted); padding: 8px; border-radius: 8px; }
+.seg button[aria-selected="true"] { background: var(--surface); color: var(--ink); box-shadow: var(--shadow); }
+.link { background: none; border: 0; padding: 4px 0; color: var(--accent); font-weight: 500; justify-self: start; text-decoration: underline; }
+.or { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: .8rem; }
+.or::before, .or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.ok-text { color: var(--in); font-weight: 500; }
+.hero { padding-bottom: 16px; }
