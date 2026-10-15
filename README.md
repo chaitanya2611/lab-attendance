@@ -1,5 +1,10 @@
 # LabMark — lab attendance with GPS + selfie
 
+**Live:** https://chaitanya2611.github.io/lab-attendance/ · Firebase project `labmark-attendance`
+
+To update the live site after changing files in `public/`: `git subtree push --prefix public origin gh-pages`.
+To update security rules: `firebase deploy --only firestore:rules` (or paste `firestore.rules` into Firestore → Rules → Publish).
+
 A SAFE-style attendance web app for labs. Students open a link on their phone, sign in with Google,
 and tap **Check in** when they arrive and **Check out** when they leave. Each tap needs:
 
