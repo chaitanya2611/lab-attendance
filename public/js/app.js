@@ -6,7 +6,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   getFirestore, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, addDoc,
-  collection, query, where, writeBatch, serverTimestamp, onSnapshot,
+  collection, query, where, writeBatch, serverTimestamp, onSnapshot, Timestamp,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig, APP_NAME, ORG_NAME, INSTITUTE_DOMAIN } from "./firebase-config.js";
 
@@ -364,6 +364,18 @@ function startStudent() {
 }
 
 const openToday = () => S.mySessions.find((s) => s.status === "open" && s.date === istDate());
+// A check-out forgotten on an earlier day can still be closed (flagged) within this window.
+const FORGOT_WINDOW_MS = 36 * 3600 * 1000;
+const lateOpen = () => S.mySessions.find((s) => s.status === "open" && s.date !== istDate() &&
+  toDate(s.inAt) && Date.now() - toDate(s.inAt).getTime() < FORGOT_WINDOW_MS);
+const FLAG_TEXT = {
+  outside: "Checked out away from the lab",
+  weak_gps: "Weak GPS signal at check-out",
+  late: "Checked out after the day ended",
+};
+const endOf = (s) => toDate(s.leftAt) || toDate(s.outAt);
+const flagPill = (s) => s.outFlag ? `<span class="pill warn" title="${esc(FLAG_TEXT[s.outReason] || "Flagged")}">flagged</span>` : "";
+const toLocalInput = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 function elapsedText() {
   const s = openToday();
   const t = s && toDate(s.inAt);
@@ -395,13 +407,20 @@ function renderStudent() {
          <button class="primary lg" id="checkin" ${activeLabs.length ? "" : "disabled"}>Check in</button>
        </section>`;
 
+  const late = !open && lateOpen();
+  const lateCard = late ? `<section class="panel warn-panel">
+      <p><strong>You didn't check out on ${fmtDay(late.date)}.</strong> You checked in at ${fmtTime(toDate(late.inAt))} (${esc(late.labName)}).</p>
+      <p class="muted small">Check out now and enter the time you left. It will be flagged for your lab manager.</p>
+      <button class="ghost" id="late-out">Check out for ${fmtDay(late.date)}</button>
+    </section>` : "";
+
   const rows = S.mySessions.slice(0, 40).map((s) => {
-    const inT = toDate(s.inAt), outT = toDate(s.outAt);
+    const inT = toDate(s.inAt), outT = endOf(s);
     const missed = s.status === "open" && s.date !== today;
     return `<li class="hist">
       <div><strong>${fmtDay(s.date)}</strong><small>${esc(s.labName)}</small></div>
       <div class="mono">${fmtTime(inT)} → ${s.status === "closed" ? fmtTime(outT) : missed ? "no check-out" : "now"}</div>
-      <div class="mono right">${missed ? `<span class="pill warn">missed</span>` : fmtDur(sessionMs(s))}</div>
+      <div class="mono right">${missed ? `<span class="pill warn">missed</span>` : fmtDur(sessionMs(s))} ${flagPill(s)}</div>
     </li>`;
   }).join("");
 
@@ -409,6 +428,7 @@ function renderStudent() {
   <main class="wrap narrow">
     <p class="hello">Hi ${esc(S.profile.name.split(" ")[0])} <span class="muted mono">${esc(S.profile.rollNo)}</span></p>
     ${statusCard}
+    ${lateCard}
     <section class="stats">
       <div><span class="num">${monthDays}</span><span class="lbl">days this month</span></div>
       <div><span class="num">${fmtDur(monthMs)}</span><span class="lbl">time in lab this month</span></div>
@@ -421,12 +441,13 @@ function renderStudent() {
   bindHeader();
   $("#checkin")?.addEventListener("click", () => runFlow("in"));
   $("#checkout")?.addEventListener("click", () => runFlow("out", open));
+  $("#late-out")?.addEventListener("click", () => runFlow("out", late));
 }
 
 function sessionMs(s) {
   const a = toDate(s.inAt);
   if (!a) return 0;
-  if (s.status === "closed") { const b = toDate(s.outAt); return b ? b - a : 0; }
+  if (s.status === "closed") { const b = endOf(s); return b ? Math.max(0, b - a) : 0; }
   return s.date === istDate() ? Date.now() - a : 0; // forgotten check-outs count as zero time
 }
 
@@ -471,17 +492,32 @@ async function runFlow(kind, session) {
   const ranked = candidates.map((l) => ({ lab: l, d: distanceM(l, lat, lng) })).sort((a, b) => a.d - b.d);
   const { lab, d } = ranked[0];
 
-  if (accuracy > S.settings.maxAccuracy) {
+  let flag = null;
+  if (kind === "out") {
+    const sameDay = session.date === istDate();
+    const inside = d <= lab.radius && accuracy <= S.settings.maxAccuracy;
+    if (!sameDay || !inside) {
+      const reason = !sameDay ? "late" : accuracy > S.settings.maxAccuracy ? "weak_gps" : "outside";
+      const where = reason === "weak_gps" ? `GPS is too weak to confirm you're in the lab (±${Math.round(accuracy)} m).`
+        : reason === "outside" ? `You are about ${Math.round(d)} m from ${lab.name}, outside its ${lab.radius} m zone.`
+        : `This check-in is from ${fmtDay(session.date)}.`;
+      const leftAt = await askLeaveTime(session, where);
+      if (!leftAt) return;
+      flag = { reason, leftAt };
+    }
+  }
+
+  if (kind === "in" && accuracy > S.settings.maxAccuracy) {
     return flowError(`GPS signal is too weak (±${Math.round(accuracy)} m; the limit is ±${S.settings.maxAccuracy} m). Turn on precise location, move near a window, and try again.`);
   }
-  if (d > lab.radius) {
+  if (kind === "in" && d > lab.radius) {
     return flowError(`You are about ${Math.round(d)} m from ${lab.name}. You need to be within ${lab.radius} m. Move into the lab and try again.`);
   }
 
   // Selfie
   openSheet(`${steps(1)}
     <h3>Take a selfie</h3>
-    <p class="muted">You are at <strong>${esc(lab.name)}</strong> (${Math.round(d)} m from the marked spot, ±${Math.round(accuracy)} m).</p>
+    <p class="muted">${flag ? `This check-out will be <strong>flagged</strong> (left at ${fmtTime(flag.leftAt)}).` : `You are at <strong>${esc(lab.name)}</strong> (${Math.round(d)} m from the marked spot, ±${Math.round(accuracy)} m).`}</p>
     <div class="cam"><video id="vid" playsinline muted autoplay></video><img id="shot" alt="Your selfie" hidden></div>
     <div class="row">
       <button class="ghost" data-close>Cancel</button>
@@ -518,11 +554,11 @@ async function runFlow(kind, session) {
     stopCamera();
     try {
       if (kind === "in") await submitIn(lab, lat, lng, accuracy, d, img);
-      else await submitOut(session, lat, lng, accuracy, d, img);
+      else await submitOut(session, lat, lng, accuracy, d, img, flag);
       openSheet(`${steps(3)}
         <div class="done-mark" aria-hidden="true">✓</div>
-        <h3 class="center">${kind === "in" ? "Checked in" : "Checked out"} at ${fmtTime(new Date())}</h3>
-        <p class="muted center">${esc(lab.name)}</p>
+        <h3 class="center">${kind === "in" ? "Checked in" : "Checked out"} at ${fmtTime(flag ? flag.leftAt : new Date())}</h3>
+        <p class="muted center">${esc(lab.name)}${flag ? " · flagged for your lab manager" : ""}</p>
         <button class="primary" data-close>Close</button>`);
     } catch (e) {
       console.error(e);
@@ -532,6 +568,34 @@ async function runFlow(kind, session) {
         ? "The server rejected this. Check that your phone's date and time are set automatically, then try again."
         : "Could not save. Check your internet connection and try again.";
     }
+  });
+}
+
+// Off-site or late check-out: the student says when they actually left. Resolves to a Date, or null if cancelled.
+function askLeaveTime(session, where) {
+  return new Promise((resolve) => {
+    const inT = toDate(session.inAt), now = new Date();
+    const def = session.date === istDate() ? toLocalInput(now) : ""; // a forgotten day: make them pick the real time
+    openSheet(`<h3>Check out from outside the lab?</h3>
+      <p class="error-box">${esc(where)}</p>
+      <p>You can still check out, but it will be <strong>flagged</strong> for your lab manager to review.</p>
+      <form id="lt" class="form">
+        <label for="lt-time">When did you leave the lab?</label>
+        <input id="lt-time" type="datetime-local" required min="${toLocalInput(inT)}" max="${toLocalInput(now)}" value="${def}">
+        <small class="muted">Between ${fmtTime(inT)} on ${fmtDay(session.date)} and now.</small>
+        <p class="error" id="lt-err" hidden></p>
+        <div class="row"><button type="button" class="ghost" id="lt-cancel">Cancel</button>
+          <button class="primary" type="submit">Continue to selfie</button></div>
+      </form>`);
+    $("#lt-cancel").addEventListener("click", () => { closeSheet(); resolve(null); });
+    $("#lt").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const t = new Date($("#lt-time").value);
+      if (isNaN(t) || t < inT || t > new Date()) {
+        const el = $("#lt-err"); el.hidden = false; el.textContent = "Pick a time between your check-in and now."; return;
+      }
+      resolve(t);
+    });
   });
 }
 
@@ -572,11 +636,13 @@ async function submitIn(lab, lat, lng, acc, dist, img) {
   await b.commit();
 }
 
-async function submitOut(session, lat, lng, acc, dist, img) {
+async function submitOut(session, lat, lng, acc, dist, img, flag) {
   const b = writeBatch(db);
   b.update(doc(db, "sessions", session.id), {
     status: "closed", outAt: serverTimestamp(), outLat: lat, outLng: lng,
     outAcc: Math.round(acc), outDist: Math.round(dist),
+    outFlag: !!flag,
+    ...(flag ? { outReason: flag.reason, leftAt: Timestamp.fromDate(flag.leftAt) } : {}),
   });
   b.set(doc(db, "photos", session.id + "_out"), { uid: S.user.uid, sessionId: session.id, kind: "out", img, at: serverTimestamp() });
   await b.commit();
@@ -621,7 +687,7 @@ function paneLive() {
         <img data-photo="${s.id}_in" alt="" class="thumb">
         <span class="pmeta"><strong>${esc(s.name)}</strong>
           <small class="mono">${esc(s.rollNo)} · ${esc(s.labName)}</small>
-          <small class="mono">${fmtTime(toDate(s.inAt))} → ${s.status === "closed" ? fmtTime(toDate(s.outAt)) : "in lab"}
+          <small class="mono">${fmtTime(toDate(s.inAt))} → ${s.status === "closed" ? fmtTime(endOf(s)) : "in lab"} ${flagPill(s)}
           ${s.status === "closed" ? " · " + fmtDur(sessionMs(s)) : ""}</small></span>
       </button>`;
     pane.innerHTML = `
@@ -657,13 +723,16 @@ async function openSession(s) {
       <button class="ghost sm" data-close>Close</button></div>
     <div class="pair">
       <figure><img data-photo="${s.id}_in" alt="Check-in selfie"><figcaption>In · ${fmtTime(inT)}</figcaption></figure>
-      <figure><img data-photo="${s.id}_out" alt="Check-out selfie"><figcaption>Out · ${s.status === "closed" ? fmtTime(outT) : "—"}</figcaption></figure>
+      <figure><img data-photo="${s.id}_out" alt="Check-out selfie"><figcaption>Out · ${s.status === "closed" ? fmtTime(endOf(s)) : "—"}</figcaption></figure>
     </div>
     <dl class="kv">
       <dt>Lab</dt><dd>${esc(s.labName)}</dd>
       <dt>Date</dt><dd>${fmtDay(s.date)}</dd>
       <dt>Time in lab</dt><dd>${s.status === "closed" ? fmtDur(sessionMs(s)) : s.date === istDate() ? "still in lab" : "no check-out"}</dd>
       <dt>Check-in spot</dt><dd class="mono">${s.inDist} m from lab · ±${s.inAcc} m ${map(s.inLat, s.inLng)}</dd>
+      ${s.outFlag ? `<dt>Flag</dt><dd><span class="pill warn">flagged</span> ${esc(FLAG_TEXT[s.outReason] || "")}.
+        Says they left at <strong>${fmtTime(toDate(s.leftAt))}</strong>${toDate(s.leftAt) && istDate(toDate(s.leftAt)) !== s.date ? " (" + fmtDay(istDate(toDate(s.leftAt))) + ")" : ""};
+        submitted at ${fmtTime(toDate(s.outAt))}${toDate(s.outAt) && istDate(toDate(s.outAt)) !== s.date ? " on " + fmtDay(istDate(toDate(s.outAt))) : ""}.</dd>` : ""}
       <dt>Check-out spot</dt><dd class="mono">${s.status === "closed" ? `${s.outDist} m from lab · ±${s.outAcc} m ${map(s.outLat, s.outLng)}` : "—"}</dd>
       <dt>Device</dt><dd class="small">${esc(s.ua || "")}</dd>
     </dl>
@@ -737,7 +806,7 @@ async function paneRecords() {
         return `<tr data-sid="${s.id}" tabindex="0">
           <td class="mono">${fmtDay(s.date)}</td><td>${esc(s.name)}</td><td class="mono">${esc(s.rollNo)}</td>
           <td>${esc(s.labName)}</td><td class="mono">${fmtTime(toDate(s.inAt))}</td>
-          <td class="mono">${s.status === "closed" ? fmtTime(toDate(s.outAt)) : missed ? `<span class="pill warn">missed</span>` : `<span class="pill in">in lab</span>`}</td>
+          <td class="mono">${s.status === "closed" ? fmtTime(endOf(s)) + " " + flagPill(s) : missed ? `<span class="pill warn">missed</span>` : `<span class="pill in">in lab</span>`}</td>
           <td class="mono right">${s.status === "closed" ? fmtDur(sessionMs(s)) : "—"}</td></tr>`;
       }).join("")}</tbody></table></div>` : `<p class="muted pad">No check-ins in this range.</p>`;
   const byId = Object.fromEntries(rows.map((s) => [s.id, s]));
@@ -747,14 +816,16 @@ async function paneRecords() {
     tr.addEventListener("keydown", (e) => { if (e.key === "Enter") open(); });
   });
   $("#exp-log").addEventListener("click", () => {
-    const out = [["Date", "Roll No", "Name", "Email", "Lab", "Check-in", "Check-out", "Minutes in lab", "Status",
+    const out = [["Date", "Roll No", "Name", "Email", "Lab", "Check-in", "Check-out", "Minutes in lab", "Status", "Check-out flag", "Check-out submitted at",
       "Check-in distance (m)", "Check-in GPS accuracy (m)", "Check-out distance (m)", "Check-out GPS accuracy (m)"]];
     rows.slice().reverse().forEach((s) => {
       const closed = s.status === "closed";
       out.push([s.date, s.rollNo, s.name, s.email, s.labName, fmtTime(toDate(s.inAt)),
-        closed ? fmtTime(toDate(s.outAt)) : "",
+        closed ? fmtTime(endOf(s)) : "",
         closed ? Math.round(sessionMs(s) / 60000) : "",
-        closed ? "Complete" : s.date === today ? "In lab" : "No check-out",
+        closed ? (s.outFlag ? "Flagged" : "Complete") : s.date === today ? "In lab" : "No check-out",
+        s.outFlag ? FLAG_TEXT[s.outReason] || "Flagged" : "",
+        s.outFlag ? istDate(toDate(s.outAt)) + " " + fmtTime(toDate(s.outAt)) : "",
         s.inDist, s.inAcc, closed ? s.outDist : "", closed ? s.outAcc : ""]);
     });
     downloadCSV(`lab-sessions_${S.rec.from}_to_${S.rec.to}.csv`, out);
@@ -781,13 +852,14 @@ function summarize(users, sessions, from, to) {
   const labDaySet = new Set(labDays);
   const minMs = (Number(S.settings.minHours) || 0) * 3600000;
 
-  const byUid = new Map(users.map((u) => [u.uid, { ...u, perDay: new Map(), totalMs: 0, missed: 0 }]));
+  const byUid = new Map(users.map((u) => [u.uid, { ...u, perDay: new Map(), totalMs: 0, missed: 0, flagged: 0 }]));
   for (const s of sessions) {
-    if (!byUid.has(s.uid)) byUid.set(s.uid, { uid: s.uid, name: s.name, rollNo: s.rollNo, email: s.email, perDay: new Map(), totalMs: 0, missed: 0 });
+    if (!byUid.has(s.uid)) byUid.set(s.uid, { uid: s.uid, name: s.name, rollNo: s.rollNo, email: s.email, perDay: new Map(), totalMs: 0, missed: 0, flagged: 0 });
     const r = byUid.get(s.uid);
     const ms = sessionMs(s);
     r.totalMs += ms;
     if (s.status === "open" && s.date !== today) r.missed++;
+    if (s.outFlag) r.flagged++;
     r.perDay.set(s.date, (r.perDay.get(s.date) ?? 0) + ms);
   }
   const rows = [...byUid.values()].map((r) => {
@@ -831,20 +903,21 @@ async function paneStudents() {
     <p class="muted">${labDays} lab days in this range (${rule}${minRule}). ${low ? `<strong class="warn-text">${low} below ${th}%</strong>.` : ""}
       Change these rules in Settings.</p>
     ${rows.length ? `<div class="table-wrap"><table>
-      <thead><tr><th>Roll no.</th><th>Name</th><th class="right">Days present</th><th>Attendance</th><th class="right">Time in lab</th><th class="right">Missed check-outs</th></tr></thead>
+      <thead><tr><th>Roll no.</th><th>Name</th><th class="right">Days present</th><th>Attendance</th><th class="right">Time in lab</th><th class="right">Missed check-outs</th><th class="right">Flagged check-outs</th></tr></thead>
       <tbody>${rows.map((r) => `<tr>
         <td class="mono">${esc(r.rollNo)}</td><td>${esc(r.name)}</td>
         <td class="mono right">${r.present} / ${labDays}</td>
         <td><div class="meter ${r.pct < th ? "low" : ""}"><span style="width:${Math.min(100, r.pct)}%"></span></div>
             <span class="mono ${r.pct < th ? "warn-text" : ""}">${r.pct}%</span></td>
         <td class="mono right">${fmtDur(r.totalMs)}</td>
-        <td class="mono right">${r.missed || ""}</td></tr>`).join("")}</tbody></table></div>`
+        <td class="mono right">${r.missed || ""}</td>
+        <td class="mono right ${r.flagged ? "warn-text" : ""}">${r.flagged || ""}</td></tr>`).join("")}</tbody></table></div>`
       : `<p class="muted pad">No students have signed up yet. Share the app link with them.</p>`}`;
 
   $("#exp-sum").addEventListener("click", () => {
-    const out = [["Roll No", "Name", "Email", "Days present", "Lab days", "Attendance %", `Below ${th}%`, "Hours in lab", "Missed check-outs", "From", "To"]];
+    const out = [["Roll No", "Name", "Email", "Days present", "Lab days", "Attendance %", `Below ${th}%`, "Hours in lab", "Missed check-outs", "Flagged check-outs", "From", "To"]];
     rows.forEach((r) => out.push([r.rollNo, r.name, r.email, r.present, labDays, r.pct, r.pct < th ? "Yes" : "No",
-      (r.totalMs / 3600000).toFixed(2), r.missed, S.stu.from, S.stu.to]));
+      (r.totalMs / 3600000).toFixed(2), r.missed, r.flagged, S.stu.from, S.stu.to]));
     downloadCSV(`lab-attendance_${S.stu.from}_to_${S.stu.to}.csv`, out);
   });
 }

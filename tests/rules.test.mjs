@@ -60,12 +60,18 @@ await t("student cannot backdate check-in", assertFails(updateDoc(doc(stu, "sess
 
 function checkOut(db, lat, lng) {
   const b = writeBatch(db);
-  b.update(doc(db, "sessions/s1"), { status: "closed", outAt: serverTimestamp(), outLat: lat, outLng: lng, outAcc: 10, outDist: 3 });
+  b.update(doc(db, "sessions/s1"), { status: "closed", outAt: serverTimestamp(), outLat: lat, outLng: lng, outAcc: 10, outDist: 3, outFlag: false });
   b.set(doc(db, "photos/s1_out"), { uid: "u1", sessionId: "s1", kind: "out", img, at: serverTimestamp() });
   return b.commit();
 }
-await t("check-out from far away rejected", assertFails(checkOut(stu, 19.14, 72.92)));
+await t("unflagged check-out from far away rejected", assertFails(checkOut(stu, 19.14, 72.92)));
+await t("flagged check-out with future leave time rejected", assertFails(updateDoc(doc(stu, "sessions/s1"), { status: "closed", outAt: serverTimestamp(), outLat: 19.14, outLng: 72.92, outAcc: 10, outDist: 900, outFlag: true, outReason: "outside", leftAt: Timestamp.fromDate(new Date(Date.now() + 3600e3)) })));
+await t("flagged check-out with leave time before check-in rejected", assertFails(updateDoc(doc(stu, "sessions/s1"), { status: "closed", outAt: serverTimestamp(), outLat: 19.14, outLng: 72.92, outAcc: 10, outDist: 900, outFlag: true, outReason: "outside", leftAt: Timestamp.fromDate(new Date(Date.now() - 86400e3)) })));
 await t("check-out inside succeeds", assertSucceeds(checkOut(stu, 19.1334, 72.9134)));
+await t("flagged check-out from outside succeeds", assertSucceeds((async () => {
+  await env.withSecurityRulesDisabled(async (c) => setDoc(doc(c.firestore(), "sessions/s9"), { ...base(19.1334, 72.9133), inAt: Timestamp.fromDate(new Date(Date.now() - 3 * 3600e3)) }));
+  return updateDoc(doc(stu, "sessions/s9"), { status: "closed", outAt: serverTimestamp(), outLat: 19.2, outLng: 72.9, outAcc: 20, outDist: 7000, outFlag: true, outReason: "outside", leftAt: Timestamp.fromDate(new Date(Date.now() - 3600e3)) });
+})()));
 await t("cannot check out twice", assertFails(updateDoc(doc(stu, "sessions/s1"), { outAt: serverTimestamp() })));
 
 await t("manager lists sessions by date", assertSucceeds(getDocs(query(collection(boss, "sessions"), where("date", ">=", "2026-01-01"), where("date", "<=", "2099-01-01")))));

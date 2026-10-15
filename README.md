@@ -69,10 +69,19 @@ change the roll number later). Tip: ask them to use **Add to Home screen** so it
 
 ---
 
+## Forgot to check out / checking out from outside
+- Leaving the lab normally: check out inside the geofence; nothing is flagged.
+- Already left (or GPS too weak): the app still lets you check out, asks **when you left**, and marks the record
+  **flagged**. Hours are counted up to that stated time.
+- Forgot until the next day: a card on the home screen lets you close yesterday's check-in (within 36 h of
+  checking in), also flagged.
+- Managers see a *flagged* tag on Today and Records, the reason and stated leave time in the record, a
+  *Flagged check-outs* column in Students, and flag columns in both CSV exports.
+
 ## How attendance % is calculated
 `Attendance % = days present ÷ lab days` in the date range you pick.
 A day is *present* when the student checked in that day (and, if set, spent the minimum hours).
-A check-in without a check-out still counts the day, but adds 0 hours and shows under *Missed check-outs*.
+A check-in that is never checked out still counts the day, but adds 0 hours and shows under *Missed check-outs*.
 
 ## What stops proxy attendance
 - Server-side checks: the rules reject a check-in whose GPS point is outside the lab radius, whose
@@ -95,7 +104,7 @@ Needs Java 11+.
 ```bash
 cd tests && npm install && npm test
 ```
-It runs 28 checks against the local Firestore emulator: far-away check-ins, backdated times, someone
+It runs 31 checks against the local Firestore emulator: far-away check-ins, backdated times, someone
 else's roll number, reading other students' photos, self-promotion to manager, and so on.
 
 ## Files

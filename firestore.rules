@@ -33,6 +33,20 @@ service cloud.firestore {
       return dx * dx + dy * dy <= l.radius * l.radius;
     }
     function lab(id) { return get(/databases/$(database)/documents/labs/$(id)).data; }
+    function normalOut() {
+      return request.resource.data.outFlag == false
+        && !('leftAt' in request.resource.data)
+        && resource.data.date == istDate(request.time)
+        && inside(lab(resource.data.labId), request.resource.data.outLat, request.resource.data.outLng);
+    }
+    function flaggedOut() {
+      return request.resource.data.outFlag == true
+        && request.resource.data.outReason in ['outside', 'weak_gps', 'late']
+        && request.resource.data.leftAt is timestamp
+        && request.resource.data.leftAt >= resource.data.inAt
+        && request.resource.data.leftAt <= request.time
+        && request.time < resource.data.inAt + duration.value(36, 'h');
+    }
     function profile() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
 
     // ---------- People ----------
@@ -88,17 +102,17 @@ service cloud.firestore {
         && request.resource.data.labName == lab(request.resource.data.labId).name
         && inside(lab(request.resource.data.labId), request.resource.data.inLat, request.resource.data.inLng);
 
-      // Check out: same day, same lab, only the check-out fields change
+      // Check out. Normal: same day, inside the lab. Flagged: from anywhere (or the next day, within 36 h),
+      // with the student's stated leave time between check-in and now.
       allow update: if isAdmin() || (signedIn()
         && resource.data.uid == request.auth.uid
         && resource.data.status == 'open'
-        && resource.data.date == istDate(request.time)
         && request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['status', 'outAt', 'outLat', 'outLng', 'outAcc', 'outDist'])
+             .hasOnly(['status', 'outAt', 'outLat', 'outLng', 'outAcc', 'outDist', 'outFlag', 'outReason', 'leftAt'])
         && request.resource.data.status == 'closed'
         && request.resource.data.outAt == request.time
         && request.resource.data.outLat is number && request.resource.data.outLng is number
-        && inside(lab(resource.data.labId), request.resource.data.outLat, request.resource.data.outLng));
+        && (normalOut() || flaggedOut()));
 
       allow delete: if isAdmin();
     }
