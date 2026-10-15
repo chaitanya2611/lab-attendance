@@ -201,3 +201,5 @@ tbody tr:last-child td { border-bottom: 0; }
 .or::before, .or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 .ok-text { color: var(--in); font-weight: 500; }
 .hero { padding-bottom: 16px; }
+.warn-panel { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); background: color-mix(in srgb, var(--warn-soft) 60%, var(--surface)); }
+.warn-panel p { margin-bottom: .5em; }
